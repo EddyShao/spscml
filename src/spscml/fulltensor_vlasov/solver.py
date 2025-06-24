@@ -14,7 +14,7 @@ from ..rk import rk1, ssprk2, imex_ssp2, imex_euler
 from ..muscl import slope_limited_flux_divergence
 from ..poisson import poisson_solve
 from ..utils import zeroth_moment, first_moment, second_moment
-from ..collisions_and_sources import flux_source_shape_func
+from ..collisions_and_sources import flux_source_shape_func, maxwellian, collision_frequency_shape_func
 
 class Solver(eqx.Module):
     plasma: TwoSpeciesPlasma
@@ -82,6 +82,10 @@ class Solver(eqx.Module):
         # HACKATHON: Solve poisson equation for E
         # See poisson.py -- poisson_solve()
         E = jnp.zeros(self.grids['x'].Nx)
+        rho_c = zeroth_moment(fe, self.grids['electron']) * self.plasma.Ze + \
+                    zeroth_moment(fi, self.grids['ion']) * self.plasma.Zi
+        E = poisson_solve(self.grids['x'], self.plasma, rho_c, boundary_conditions)
+
         
         electron_rhs = self.vlasov_fp_single_species_rhs(fe, E, self.plasma.Ae, self.plasma.Ze, 
                                                          self.grids['electron'],
@@ -120,10 +124,19 @@ class Solver(eqx.Module):
                                               axis=0)
 
         # HACKATHON: implement E*df/dv term
-
+        f_bc_v = self.apply_bcs(f, bcs, 'v')
+        EZA = E[:, None] * (Z / A)
+        # EA = E * (Z / A)
+        G = lambda left, right: jnp.where(EZA > 0, left * EZA, right * EZA)
+        Edfdv = self.plasma.omega_c_tau * slope_limited_flux_divergence(f_bc_v, 'minmod', G,
+                                             grid.dv,
+                                             axis=1)
         # HACKATHON: implement BGK collision term
+        n_s = zeroth_moment(f, grid)
+        M_s = maxwellian(grid, A, n_s)
+        Q = nu * (M_s - f)
 
-        return -vdfdx
+        return -vdfdx - Edfdv + Q
 
 
     def apply_bcs(self, f, bcs, dim):

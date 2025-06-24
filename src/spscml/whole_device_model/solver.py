@@ -3,6 +3,7 @@ import jax
 import jpu
 import optimistix as optx
 import mlflow
+from functools import partial
 
 from ..grids import PhaseSpaceGrid
 
@@ -105,7 +106,36 @@ class Solver():
         # You'll need to implement:
         # - A residual function that accepts a guess [Q, V]^n+1 and returns the error in the implicit step
         # - A call to optx.root_find that performs the Newton solve with self.rootfinder
-        raise NotImplementedError("HACKATHON: implement Implicit Euler step")
+        Q_n, Ip_n = y
+        Lp = self.Lp
+        R = self.R
+        C = self.C
+        L = self.L
+        
+
+        # @partial(jax.jit, static_argnames=('args'))
+        def residual(guess, args):
+            # Convert to units
+            Q, V = guess
+            Ip = sheath_solve(V, T, n) 
+            coef =  Lp / (L - Lp)
+            V_RP = (V - coef * (-Q / C - R * Ip)) / (1 - coef)
+            res_Q = Q - (Q_n + dt * Ip)
+            res_Vp = - Ip + Ip_n + dt * (- Q / C - R * Ip + V_RP ) / (L - Lp)
+
+            return jnp.array([res_Q, res_Vp])
+        
+        # Initial guess for the Newton iteration
+        y_guess = jnp.array([Q_n, Vp])
+        # Perform the Newton iteration to find the implicit Euler step
+        root = optx.root_find(residual, self.rootfinder, y_guess, max_steps=20, throw=False)
+        # if not root.converged:
+        #     raise RuntimeError(f"Implicit Euler step did not converge: {root}")
+        Q_new, V_new = root.value
+        Ip_new = sheath_solve(V_new, T, n) 
+        y_new = jnp.array([Q_new, Ip_new])
+    
+        return y_new, V_new
 
 
     def log_progress(self, t, y, Vp):
